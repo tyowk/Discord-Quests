@@ -65,4 +65,9 @@ export interface QuestConfig {
 export interface QuestEntry {
 	id: string;
 	config: QuestConfig;
+  regions?: {
+    include: string[];
+    exclude: string[];
+    is_global: boolean;
+  };
 }

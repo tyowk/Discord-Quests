@@ -2,6 +2,7 @@ import { fetchJson } from '../utils/fetcher';
 import { QuestEntry } from '../types/quest';
 
 const QUESTS_ENDPOINT = 'https://api.discordquest.com/api/quests';
+const REGIONS_ENDPOINT = 'https://api.discordquest.com/api/regions';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
@@ -36,6 +37,19 @@ function readStringArray(value: unknown): string[] {
         (typeof entry === 'number' && Number.isFinite(entry)),
     )
     .map(String);
+}
+
+function readRegionCodeArray(value: unknown): string[] | undefined {
+  if (
+    !Array.isArray(value) ||
+    !value.every(
+      (entry) => typeof entry === 'string' && entry.trim().length > 0,
+    )
+  ) {
+    return undefined;
+  }
+
+  return value.map((entry: string) => entry.trim().toUpperCase());
 }
 
 function readNumberArray(value: unknown): number[] {
@@ -306,11 +320,97 @@ function normalizeQuest(item: unknown): QuestEntry {
   };
 }
 
-export async function fetchQuests(): Promise<QuestEntry[]> {
-  const payload =
-    await fetchJson<unknown>(
-      QUESTS_ENDPOINT,
+function parseQuestRegions(payload: unknown): {
+  regionsByQuestId: Map<string, QuestEntry['regions']>;
+  skippedRecords: number;
+} {
+  if (!isRecord(payload) || !Array.isArray(payload.quests)) {
+    throw new Error('regions API response must contain a quests array');
+  }
+
+  const regionsByQuestId = new Map<string, QuestEntry['regions']>();
+  let skippedRecords = 0;
+
+  for (const item of payload.quests) {
+    if (!isRecord(item) || typeof item.id !== 'string') {
+      skippedRecords += 1;
+      continue;
+    }
+
+    const rawRegions = item.regions;
+    let regionList:
+      | { include: string[]; exclude: string[] }
+      | undefined;
+
+    if (Array.isArray(rawRegions)) {
+      const include = readRegionCodeArray(rawRegions);
+      if (include) {
+        regionList = { include, exclude: [] };
+      }
+    } else if (isRecord(rawRegions)) {
+      const hasInclude = Object.hasOwn(rawRegions, 'include');
+      const hasExclude = Object.hasOwn(rawRegions, 'exclude');
+      const include = hasInclude
+        ? readRegionCodeArray(rawRegions.include)
+        : [];
+      const exclude = hasExclude
+        ? readRegionCodeArray(rawRegions.exclude)
+        : [];
+
+      if (
+        (hasInclude || hasExclude) &&
+        include !== undefined &&
+        exclude !== undefined
+      ) {
+        regionList = { include, exclude };
+      }
+    }
+
+    if (!regionList) {
+      skippedRecords += 1;
+      continue;
+    }
+
+    regionsByQuestId.set(item.id, {
+      include: regionList.include,
+      exclude: regionList.exclude,
+      is_global: item.is_global === true,
+    });
+  }
+
+  if (payload.quests.length > 0 && regionsByQuestId.size === 0) {
+    throw new Error(
+      'regions API response did not contain any supported quest region records',
     );
+  }
+
+  return { regionsByQuestId, skippedRecords };
+}
+
+async function fetchQuestRegions(): Promise<Map<string, QuestEntry['regions']>> {
+  try {
+    const payload = await fetchJson<unknown>(REGIONS_ENDPOINT);
+    const { regionsByQuestId, skippedRecords } = parseQuestRegions(payload);
+
+    if (skippedRecords > 0) {
+      console.warn(
+        `Regions API returned ${skippedRecords} unsupported quest region record(s); some quests may be missing flags information.`,
+      );
+    }
+
+    return regionsByQuestId;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(`Could not fetch quest regions; quests will be posted without region data: ${message}`);
+    return new Map();
+  }
+}
+
+export async function fetchQuests(): Promise<QuestEntry[]> {
+  const [payload, regionsByQuestId] = await Promise.all([
+    fetchJson<unknown>(QUESTS_ENDPOINT),
+    fetchQuestRegions(),
+  ]);
 
   if (!Array.isArray(payload)) {
     throw new Error(
@@ -322,9 +422,9 @@ export async function fetchQuests(): Promise<QuestEntry[]> {
 
   for (const item of payload) {
     try {
-      normalized.push(
-        normalizeQuest(item),
-      );
+      const quest = normalizeQuest(item);
+      quest.regions = regionsByQuestId.get(quest.id);
+      normalized.push(quest);
     } catch {
       continue;
     }

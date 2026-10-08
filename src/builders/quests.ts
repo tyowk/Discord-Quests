@@ -167,6 +167,30 @@ function questHeader(quest: QuestEntry): string {
   return `## **New Quest** - [${quest.config.messages.quest_name}](${questUrl})`;
 }
 
+function questRegionLabel(quest: QuestEntry): string {
+  const regions = quest.regions;
+  if (!regions) {
+    return 'Unknown';
+  }
+
+  if (regions.is_global) {
+    return regions.exclude.length > 0
+      ? `Global (excluding ${regions.exclude.join(', ')})`
+      : 'Global';
+  }
+
+  if (regions.include.length > 0) {
+    const included = regions.include.join(', ');
+    return regions.exclude.length > 0
+      ? `${included} (excluding ${regions.exclude.join(', ')})`
+      : included;
+  }
+
+  return regions.exclude.length > 0
+    ? `All except ${regions.exclude.join(', ')}`
+    : 'Unspecified';
+}
+
 function questInfoBlock(quest: QuestEntry): string {
   const config = quest.config;
   const start = toUnixTimestamp(config.starts_at);
@@ -182,11 +206,23 @@ function questInfoBlock(quest: QuestEntry): string {
   return [
     '# Quest Info',
     `**Duration**: <t:${start}:d> - <t:${end}:d>`,
+    `**Region**: ${questRegionLabel(quest)}`,
     `**Reedemable Platforms**: ${platformLabel(config.rewards_config?.platforms)}`,
     `**Game**: ${gameTitle} (${gamePublisher})`,
     `**Application**: ${applicationLine}`,
     `**Features**: ${features}`,
   ].join('\n');
+}
+
+function questRegionFlagUrl(quest: QuestEntry): string | undefined {
+  const regionCode = quest.regions?.include[0]?.toLowerCase();
+  if (!regionCode || !/^[a-z]{2}$/.test(regionCode)) {
+    return undefined;
+  }
+
+  // The /regions API uses "uk", while the flag CDN uses "gb".
+  const flagCode = regionCode === 'uk' ? 'gb' : regionCode;
+  return `https://flags.restcountries.com/v5/w1280/${flagCode}-1x1.png`;
 }
 
 function tasksBlock(quest: QuestEntry): string {
@@ -270,6 +306,7 @@ export function buildQuestPayload(
   const heroImage = questHeroImageUrl(quest);
   const rewards = quest.config.rewards_config?.rewards ?? [];
   const selectedVideo = questTaskVideoUrl(quest);
+  const regionFlagUrl = questRegionFlagUrl(quest);
   const requiresOrbsAttachment = rewards.some((reward) => reward.type === 4 && typeof reward.orb_quantity === 'number');
 
   const components: DiscordComponent[] = [
@@ -294,10 +331,27 @@ export function buildQuestPayload(
       divider: true,
       spacing: 1,
     },
-    {
-      type: 10,
-      content: questInfoBlock(quest),
-    },
+    regionFlagUrl
+      ? {
+          type: 9,
+          components: [
+            {
+              type: 10,
+              content: questInfoBlock(quest),
+            },
+          ],
+          accessory: {
+            type: 11,
+            media: {
+              url: regionFlagUrl,
+            },
+            spoiler: false,
+          },
+        }
+      : {
+          type: 10,
+          content: questInfoBlock(quest),
+        },
     {
       type: 14,
       divider: true,
